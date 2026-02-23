@@ -3,19 +3,21 @@
 #
 # Modes:
 #   (default)                  — run the fzf dashboard
-#   --list [REPO]              — print session list (for fzf reload)
+#   --list [--collapsed] REPO  — print session list (for fzf reload)
 #   --preview SESSION WINDEX   — print preview pane content
 #   --lazygit SESSION          — open lazygit in session's workdir
 #   --terminal SESSION         — open new shell window in session
+#   --kill SESSION WINDEX      — kill a window or session/worktree
 #
 # Keys inside fzf:
 #   enter   → switch to session/window
 #   ctrl-w  → new worktree + agent
 #   ctrl-a  → new agent in selected session
 #   ctrl-t  → new terminal in selected session
-#   ctrl-x  → kill selected worktree
+#   ctrl-x  → kill selected window or session
 #   ctrl-g  → merge selected worktree
 #   ctrl-l  → lazygit on selected session
+#   ctrl-e  → toggle expanded/collapsed view
 #   ctrl-r  → refresh list
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,14 +31,12 @@ DIM=$'\033[2m'
 RESET=$'\033[0m'
 
 # Detect agent status for a window using @knute-agent option + pane content
-# Returns: "running", "input", "done", or ""
 agent_status() {
     local session="$1" windex="$2"
     local agent_flag
     agent_flag=$(tmux show-options -wqv -t "=$session:$windex" @knute-agent 2>/dev/null)
 
     if [ "$agent_flag" = "running" ]; then
-        # Agent is running — check pane content for input prompts
         local last_lines
         last_lines=$(tmux capture-pane -t "=$session:$windex" -p -S -8 2>/dev/null)
         if echo "$last_lines" | grep -qE '(Do you want|Allow |Deny |\[Y/n\]|\[y/N\]|Esc to cancel|❯ [0-9]+\.)'; then
@@ -49,11 +49,27 @@ agent_status() {
     fi
 }
 
+# Count agents and attention items for a session (used in collapsed view)
+session_summary() {
+    local sname="$1"
+    local nwin=0 nagent=0 has_bell=false
+    while IFS=$'\t' read -r windex wname wbell; do
+        nwin=$((nwin + 1))
+        astatus=$(agent_status "$sname" "$windex")
+        [ -n "$astatus" ] && nagent=$((nagent + 1))
+        [ "$astatus" = "input" ] && has_bell=true
+        [ "$wbell" = "1" ] && has_bell=true
+    done < <(tmux list-windows -t "=$sname" -F '#{window_index}'$'\t''#{window_name}'$'\t''#{window_bell_flag}' 2>/dev/null)
+    echo "${nwin}:${nagent}:${has_bell}"
+}
+
 # --- Mode: --list [REPO] ---
-# Format: SESSION<TAB>WINDEX<TAB>DISPLAY
-# fzf uses --with-nth=3.. to show only the display column
+# Reads /tmp/knute-view for expanded/collapsed state
 if [ "$1" = "--list" ]; then
-    filter_repo="$2"
+    shift
+    filter_repo="$1"
+    collapsed=false
+    [ "$(cat /tmp/knute-view 2>/dev/null)" = "collapsed" ] && collapsed=true
     repo_file=$(mktemp) other_file=$(mktemp)
     trap "rm -f '$repo_file' '$other_file'" EXIT
 
@@ -64,45 +80,56 @@ if [ "$1" = "--list" ]; then
         fi
 
         attached=$(tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null | grep "^${sname} " | awk '{print $2}')
-        has_attention=false
-        win_buf=""
 
-        while IFS=$'\t' read -r windex wname wbell; do
-            status_text=""
-            astatus=$(agent_status "$sname" "$windex")
+        if $collapsed; then
+            # Collapsed: one line per session with summary
+            IFS=: read -r nwin nagent has_bell <<< "$(session_summary "$sname")"
+            header="${BOLD}► ${sname}${RESET}"
+            header+="  ${DIM}${nwin}w${RESET}"
+            [ "$nagent" -gt 0 ] && header+="  ${DIM}${nagent}a${RESET}"
+            [ "$has_bell" = "true" ] && header+="  ${RED}!${RESET}"
+            [ "$attached" = "1" ] && header+="  ${DIM}*${RESET}"
+            printf '%s\t%s\t%s\n' "$sname" "-1" "$header" >> "$dest"
+        else
+            # Expanded: session header + window rows
+            has_attention=false
+            win_buf=""
 
-            case "$astatus" in
-                input)
-                    status_text="  ${RED}⏳ input${RESET}"
-                    has_attention=true
-                    ;;
-                running)
-                    status_text="  ${YELLOW}● active${RESET}"
-                    ;;
-                done)
-                    if [ "$wbell" = "1" ]; then
-                        status_text="  ${GREEN}✓ done ${RED}!${RESET}"
+            while IFS=$'\t' read -r windex wname wbell; do
+                status_text=""
+                astatus=$(agent_status "$sname" "$windex")
+
+                case "$astatus" in
+                    input)
+                        status_text="  ${RED}⏳ input${RESET}"
                         has_attention=true
-                    else
-                        status_text="  ${GREEN}✓ done${RESET}"
-                    fi
-                    ;;
-                *)
-                    # Not an agent — still show bell if set
-                    [ "$wbell" = "1" ] && { status_text="  ${RED}!${RESET}"; has_attention=true; }
-                    ;;
-            esac
+                        ;;
+                    running)
+                        status_text="  ${YELLOW}● active${RESET}"
+                        ;;
+                    done)
+                        if [ "$wbell" = "1" ]; then
+                            status_text="  ${GREEN}✓ done ${RED}!${RESET}"
+                            has_attention=true
+                        else
+                            status_text="  ${GREEN}✓ done${RESET}"
+                        fi
+                        ;;
+                    *)
+                        [ "$wbell" = "1" ] && { status_text="  ${RED}!${RESET}"; has_attention=true; }
+                        ;;
+                esac
 
-            win_buf+="${sname}"$'\t'"${windex}"$'\t'"  ${DIM}${windex}:${RESET} ${wname}${status_text}"$'\n'
-        done < <(tmux list-windows -t "=$sname" -F '#{window_index}'$'\t''#{window_name}'$'\t''#{window_bell_flag}' 2>/dev/null)
+                win_buf+="${sname}"$'\t'"${windex}"$'\t'"  ${DIM}${windex}:${RESET} ${wname}${status_text}"$'\n'
+            done < <(tmux list-windows -t "=$sname" -F '#{window_index}'$'\t''#{window_name}'$'\t''#{window_bell_flag}' 2>/dev/null)
 
-        # Session header
-        header="${BOLD}► ${sname}${RESET}"
-        $has_attention && header+="  ${RED}!${RESET}"
-        [ "$attached" = "1" ] && header+="  ${DIM}*${RESET}"
+            header="${BOLD}► ${sname}${RESET}"
+            $has_attention && header+="  ${RED}!${RESET}"
+            [ "$attached" = "1" ] && header+="  ${DIM}*${RESET}"
 
-        printf '%s\t%s\t%s\n' "$sname" "-1" "$header" >> "$dest"
-        printf '%s' "$win_buf" >> "$dest"
+            printf '%s\t%s\t%s\n' "$sname" "-1" "$header" >> "$dest"
+            printf '%s' "$win_buf" >> "$dest"
+        fi
     done < <(tmux list-sessions -F '#S' 2>/dev/null)
 
     if [ -s "$repo_file" ] && [ -s "$other_file" ]; then
@@ -122,12 +149,10 @@ if [ "$1" = "--preview" ]; then
     session="$2" windex="$3"
     [ "$session" = "---" ] && exit 0
 
-    # Resolve working directory
     target="$session"
     [ "$windex" != "-1" ] && target="$session:$windex"
     wd=$(tmux list-panes -t "=$target" -F '#{pane_current_path}' 2>/dev/null | head -1)
 
-    # Git info
     if [ -n "$wd" ] && git -C "$wd" rev-parse --git-dir &>/dev/null; then
         branch=$(git -C "$wd" branch --show-current 2>/dev/null)
         echo "${BOLD}Branch:${RESET} ${branch:-detached}"
@@ -137,7 +162,6 @@ if [ "$1" = "--preview" ]; then
         git -C "$wd" log --oneline -5 2>/dev/null
     fi
 
-    # Pane output for specific windows
     if [ "$windex" != "-1" ]; then
         echo ""
         echo "${DIM}── pane output ──${RESET}"
@@ -169,9 +193,44 @@ if [ "$1" = "--terminal" ]; then
     exit 0
 fi
 
+# --- Mode: --kill SESSION WINDEX ---
+if [ "$1" = "--kill" ]; then
+    session="$2" windex="$3"
+    [ -z "$session" ] || [ "$session" = "---" ] && exit 0
+
+    if [ "$windex" = "-1" ]; then
+        # Kill entire session/worktree
+        exec "$CURRENT_DIR/kill-worktree.sh" --session "$session"
+    else
+        # Kill specific window
+        wname=$(tmux list-windows -t "=$session:$windex" -F '#{window_name}' 2>/dev/null)
+        echo "Kill window $windex: $wname [$session]"
+        echo ""
+        read -r -p "Kill this window? [y/N] " confirm
+        [[ "$confirm" =~ ^[yY]$ ]] && tmux kill-window -t "=$session:$windex" 2>/dev/null
+    fi
+    exit 0
+fi
+
+# --- Mode: --toggle ---
+# Flips the view state file and exits (used by fzf execute-silent)
+if [ "$1" = "--toggle" ]; then
+    if [ "$(cat /tmp/knute-view 2>/dev/null)" = "expanded" ]; then
+        echo "collapsed" > /tmp/knute-view
+    else
+        echo "expanded" > /tmp/knute-view
+    fi
+    exit 0
+fi
+
 # --- Default: run fzf dashboard ---
 CURRENT=$(current_session)
 REPO=$(repo_name 2>/dev/null)
+
+# Default to collapsed
+[ ! -f /tmp/knute-view ] && echo "collapsed" > /tmp/knute-view
+
+RELOAD="$CURRENT_DIR/dashboard.sh --list $REPO"
 
 SESSIONS=$("$CURRENT_DIR/dashboard.sh" --list "$REPO")
 [ -z "$SESSIONS" ] && { echo "No sessions."; read -n1 -r -p ""; exit 0; }
@@ -180,20 +239,21 @@ SELECTED=$(echo "$SESSIONS" | fzf \
     --ansi \
     --delimiter=$'\t' \
     --with-nth=3.. \
-    --header="enter:switch  ^w:worktree  ^a:agent  ^t:terminal  ^x:kill  ^g:merge  ^l:lazygit  ^r:refresh" \
+    --header="enter:switch  ^w:worktree  ^a:agent  ^t:term  ^x:kill  ^g:merge  ^l:lazygit  ^e:expand  ^r:refresh" \
     --prompt="[$CURRENT] > " \
     --height=100% \
     --layout=reverse \
     --border=rounded \
     --preview "$CURRENT_DIR/dashboard.sh --preview '{1}' '{2}'" \
     --preview-window=right:40% \
-    --bind "ctrl-r:reload($CURRENT_DIR/dashboard.sh --list $REPO)" \
-    --bind "ctrl-w:execute($CURRENT_DIR/new-worktree.sh)+reload($CURRENT_DIR/dashboard.sh --list $REPO)" \
-    --bind "ctrl-a:execute([ '{1}' != '---' ] && $CURRENT_DIR/new-agent.sh --session '{1}')+reload($CURRENT_DIR/dashboard.sh --list $REPO)" \
-    --bind "ctrl-t:execute([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --terminal '{1}')+reload($CURRENT_DIR/dashboard.sh --list $REPO)" \
-    --bind "ctrl-x:execute([ '{1}' != '---' ] && $CURRENT_DIR/kill-worktree.sh --session '{1}')+reload($CURRENT_DIR/dashboard.sh --list $REPO)" \
-    --bind "ctrl-g:execute([ '{1}' != '---' ] && $CURRENT_DIR/merge-worktree.sh --session '{1}')+reload($CURRENT_DIR/dashboard.sh --list $REPO)" \
-    --bind "ctrl-l:execute([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --lazygit '{1}')+reload($CURRENT_DIR/dashboard.sh --list $REPO)" \
+    --bind "ctrl-r:reload($RELOAD)" \
+    --bind "ctrl-e:execute-silent($CURRENT_DIR/dashboard.sh --toggle)+reload($RELOAD)" \
+    --bind "ctrl-w:execute($CURRENT_DIR/new-worktree.sh)+reload($RELOAD)" \
+    --bind "ctrl-a:execute([ '{1}' != '---' ] && $CURRENT_DIR/new-agent.sh --session '{1}')+reload($RELOAD)" \
+    --bind "ctrl-t:execute-silent([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --terminal '{1}')+reload($RELOAD)" \
+    --bind "ctrl-x:execute([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --kill '{1}' '{2}')+reload($RELOAD)" \
+    --bind "ctrl-g:execute([ '{1}' != '---' ] && $CURRENT_DIR/merge-worktree.sh --session '{1}')+reload($RELOAD)" \
+    --bind "ctrl-l:execute([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --lazygit '{1}')+reload($RELOAD)" \
 )
 
 # Handle enter: switch to selected session (and optionally window)
