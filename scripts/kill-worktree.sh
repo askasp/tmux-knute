@@ -22,7 +22,14 @@ echo ""
 read -r -p "Kill session and remove worktree? [y/N] " CONFIRM
 [[ ! "$CONFIRM" =~ ^[yY]$ ]] && exit 0
 
-# Kill the session — tmux auto-moves clients to another session
+# If killing the session we're in, switch client to another session first
+# so the dashboard popup doesn't die with it
+CURRENT_CLIENT_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+if [ "$CURRENT_CLIENT_SESSION" = "$SESSION" ]; then
+    OTHER=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -v "^${SESSION}$" | head -1)
+    [ -n "$OTHER" ] && tmux switch-client -t "=$OTHER"
+fi
+
 tmux kill-session -t "=$SESSION" 2>/dev/null
 
 # Remove worktree

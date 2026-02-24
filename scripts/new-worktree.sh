@@ -3,12 +3,23 @@
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/helpers.sh"
 
-ROOT=$(repo_root)
-if [ -z "$ROOT" ]; then
-    echo "Not a git repository"; read -n1 -r -p ""; exit 1
+# Resolve to the main worktree root, not a child worktree
+DEFAULT_ROOT=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
+if [ -z "$DEFAULT_ROOT" ]; then
+    DEFAULT_ROOT="$HOME"
 fi
-REPO=$(repo_name)
 
+read -e -p "Repo [$DEFAULT_ROOT]: " CUSTOM_ROOT
+ROOT="${CUSTOM_ROOT:-$DEFAULT_ROOT}"
+ROOT="${ROOT/#\~/$HOME}"
+
+if ! git -C "$ROOT" rev-parse --git-dir &>/dev/null; then
+    echo "Not a git repository: $ROOT"; read -n1 -r -p ""; exit 1
+fi
+ROOT=$(git -C "$ROOT" rev-parse --show-toplevel)
+REPO=$(basename "$ROOT")
+
+echo ""
 echo "New worktree [$REPO]"
 echo ""
 read -r -p "Branch: " BRANCH
@@ -23,7 +34,9 @@ if session_exists "$SESSION"; then
     exit 0
 fi
 
-read -r -p "Task for claude (empty=shell only): " TASK
+setup_file_completion "$ROOT"
+read -e -p "Task for claude (@=files, empty=shell only): " TASK
+teardown_file_completion
 
 ensure_gitignore
 

@@ -23,9 +23,13 @@
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/helpers.sh"
 
-RED=$'\033[31m'
-GREEN=$'\033[32m'
-YELLOW=$'\033[33m'
+# Colors — Linear-inspired palette (truecolor)
+ACCENT=$'\033[38;2;94;106;210m'      # #5E6AD2 indigo
+GREEN=$'\033[38;2;74;222;128m'       # #4ADE80
+AMBER=$'\033[38;2;229;164;69m'       # #E5A445
+RED=$'\033[38;2;229;83;75m'          # #E5534B
+FG=$'\033[38;2;237;237;239m'         # #EDEDEF
+MUTED=$'\033[38;2;138;143;152m'      # #8A8F98
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
@@ -84,11 +88,11 @@ if [ "$1" = "--list" ]; then
         if $collapsed; then
             # Collapsed: one line per session with summary
             IFS=: read -r nwin nagent has_bell <<< "$(session_summary "$sname")"
-            header="${BOLD}► ${sname}${RESET}"
-            header+="  ${DIM}${nwin}w${RESET}"
-            [ "$nagent" -gt 0 ] && header+="  ${DIM}${nagent}a${RESET}"
-            [ "$has_bell" = "true" ] && header+="  ${RED}!${RESET}"
-            [ "$attached" = "1" ] && header+="  ${DIM}*${RESET}"
+            header="${ACCENT}▸${RESET} ${FG}${BOLD}${sname}${RESET}"
+            header+="  ${MUTED}${nwin}w${RESET}"
+            [ "$nagent" -gt 0 ] && header+="  ${MUTED}${nagent}a${RESET}"
+            [ "$has_bell" = "true" ] && header+="  ${AMBER}●${RESET}"
+            [ "$attached" = "1" ] && header+="  ${MUTED}*${RESET}"
             printf '%s\t%s\t%s\n' "$sname" "-1" "$header" >> "$dest"
         else
             # Expanded: session header + window rows
@@ -101,31 +105,31 @@ if [ "$1" = "--list" ]; then
 
                 case "$astatus" in
                     input)
-                        status_text="  ${RED}⏳ input${RESET}"
+                        status_text="  ${AMBER}● input${RESET}"
                         has_attention=true
                         ;;
                     running)
-                        status_text="  ${YELLOW}● active${RESET}"
+                        status_text="  ${ACCENT}● active${RESET}"
                         ;;
                     done)
                         if [ "$wbell" = "1" ]; then
-                            status_text="  ${GREEN}✓ done ${RED}!${RESET}"
+                            status_text="  ${GREEN}✓ done ${AMBER}●${RESET}"
                             has_attention=true
                         else
                             status_text="  ${GREEN}✓ done${RESET}"
                         fi
                         ;;
                     *)
-                        [ "$wbell" = "1" ] && { status_text="  ${RED}!${RESET}"; has_attention=true; }
+                        [ "$wbell" = "1" ] && { status_text="  ${AMBER}●${RESET}"; has_attention=true; }
                         ;;
                 esac
 
-                win_buf+="${sname}"$'\t'"${windex}"$'\t'"  ${DIM}${windex}:${RESET} ${wname}${status_text}"$'\n'
+                win_buf+="${sname}"$'\t'"${windex}"$'\t'"    ${MUTED}${windex}${RESET}  ${wname}${status_text}"$'\n'
             done < <(tmux list-windows -t "=$sname" -F '#{window_index}'$'\t''#{window_name}'$'\t''#{window_bell_flag}' 2>/dev/null)
 
-            header="${BOLD}► ${sname}${RESET}"
-            $has_attention && header+="  ${RED}!${RESET}"
-            [ "$attached" = "1" ] && header+="  ${DIM}*${RESET}"
+            header="${ACCENT}▸${RESET} ${FG}${BOLD}${sname}${RESET}"
+            $has_attention && header+="  ${AMBER}●${RESET}"
+            [ "$attached" = "1" ] && header+="  ${MUTED}*${RESET}"
 
             printf '%s\t%s\t%s\n' "$sname" "-1" "$header" >> "$dest"
             printf '%s' "$win_buf" >> "$dest"
@@ -134,7 +138,7 @@ if [ "$1" = "--list" ]; then
 
     if [ -s "$repo_file" ] && [ -s "$other_file" ]; then
         cat "$repo_file"
-        printf '%s\t%s\t%s\n' "---" "-1" "${DIM}  ─────────────────${RESET}"
+        printf '%s\t%s\t%s\n' "---" "-1" "${MUTED}  ───${RESET}"
         cat "$other_file"
     elif [ -s "$repo_file" ]; then
         cat "$repo_file"
@@ -155,16 +159,16 @@ if [ "$1" = "--preview" ]; then
 
     if [ -n "$wd" ] && git -C "$wd" rev-parse --git-dir &>/dev/null; then
         branch=$(git -C "$wd" branch --show-current 2>/dev/null)
-        echo "${BOLD}Branch:${RESET} ${branch:-detached}"
-        echo "${BOLD}Status:${RESET} $(git -C "$wd" status -sb 2>/dev/null | head -1)"
+        echo "${MUTED}branch${RESET}   ${FG}${branch:-detached}${RESET}"
+        echo "${MUTED}status${RESET}   $(git -C "$wd" status -sb 2>/dev/null | head -1)"
         echo ""
-        echo "${DIM}Recent commits:${RESET}"
+        echo "${MUTED}commits${RESET}"
         git -C "$wd" log --oneline -5 2>/dev/null
     fi
 
     if [ "$windex" != "-1" ]; then
         echo ""
-        echo "${DIM}── pane output ──${RESET}"
+        echo "${MUTED}─── pane ───${RESET}"
         tmux capture-pane -t "=$session:$windex" -p -S -20 2>/dev/null
     fi
     exit 0
@@ -190,6 +194,24 @@ if [ "$1" = "--terminal" ]; then
     session="$2"
     wd=$(tmux list-panes -t "=$session" -F '#{pane_current_path}' 2>/dev/null | head -1)
     tmux new-window -t "=$session" -c "${wd:-.}"
+    exit 0
+fi
+
+# --- Mode: --new-session ---
+if [ "$1" = "--new-session" ]; then
+    # Create a plain tmux session in a user-picked directory
+    read -r -p "Session name (blank=auto): " sname
+    read -r -e -p "Directory [~]: " sdir
+    sdir="${sdir:-$HOME}"
+    sdir="${sdir/#\~/$HOME}"
+    if [ -n "$sname" ]; then
+        tmux new-session -d -s "$sname" -c "$sdir"
+        echo "$sname" > /tmp/knute-switch
+    else
+        # Let tmux auto-name it
+        sname=$(tmux new-session -d -P -F '#{session_name}' -c "$sdir")
+        echo "$sname" > /tmp/knute-switch
+    fi
     exit 0
 fi
 
@@ -239,13 +261,15 @@ SELECTED=$(echo "$SESSIONS" | fzf \
     --ansi \
     --delimiter=$'\t' \
     --with-nth=3.. \
-    --header="enter:switch  ^w:worktree  ^a:agent  ^t:term  ^x:kill  ^g:merge  ^l:lazygit  ^e:expand  ^r:refresh" \
-    --prompt="[$CURRENT] > " \
+    --header="enter:switch  ^w:worktree  ^a:agent  ^t:term  ^n:new  ^x:kill  ^g:merge  ^l:lazygit  ^e:view" \
+    --prompt="  $CURRENT ❯ " \
+    --pointer="▸" \
     --height=100% \
     --layout=reverse \
     --border=rounded \
+    --color="bg:#050506,fg:#8A8F98,hl:#5E6AD2,bg+:#111118,fg+:#EDEDEF,hl+:#6872D9,info:#5E6AD2,prompt:#5E6AD2,pointer:#5E6AD2,marker:#5E6AD2,spinner:#5E6AD2,header:#555566,border:#1a1a2e,gutter:#050506,preview-bg:#050506,preview-border:#1a1a2e,separator:#1a1a2e,query:#EDEDEF" \
     --preview "$CURRENT_DIR/dashboard.sh --preview '{1}' '{2}'" \
-    --preview-window=right:40% \
+    --preview-window=right:40%:border-left \
     --bind "ctrl-r:reload($RELOAD)" \
     --bind "ctrl-e:execute-silent($CURRENT_DIR/dashboard.sh --toggle)+reload($RELOAD)" \
     --bind "ctrl-w:execute($CURRENT_DIR/new-worktree.sh)+reload($RELOAD)" \
@@ -253,6 +277,7 @@ SELECTED=$(echo "$SESSIONS" | fzf \
     --bind "ctrl-t:execute-silent([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --terminal '{1}')+reload($RELOAD)" \
     --bind "ctrl-x:execute([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --kill '{1}' '{2}')+reload($RELOAD)" \
     --bind "ctrl-g:execute([ '{1}' != '---' ] && $CURRENT_DIR/merge-worktree.sh --session '{1}')+reload($RELOAD)" \
+    --bind "ctrl-n:execute($CURRENT_DIR/dashboard.sh --new-session)+reload($RELOAD)" \
     --bind "ctrl-l:execute([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --lazygit '{1}')+reload($RELOAD)" \
 )
 

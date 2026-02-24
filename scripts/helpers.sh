@@ -85,6 +85,52 @@ session_worktree_path() {
     [ -n "$main_root" ] && echo "$main_root/$WORKTREE_DIR/$branch"
 }
 
+# Inline @-file completion for task input
+# Pressing @ during read -e triggers fzf file picker, inserts @path inline.
+# Esc in picker inserts a literal @.
+# Usage: setup_file_completion /path/to/workdir  (before read -e)
+#        teardown_file_completion                 (after read -e)
+setup_file_completion() {
+    export _KNUTE_WORKDIR="$1"
+
+    _knute_file_pick() {
+        local selected
+        selected=$(cd "$_KNUTE_WORKDIR" && {
+            git ls-files 2>/dev/null
+            git ls-files --others --exclude-standard 2>/dev/null
+        } | sort -u | fzf \
+            --multi \
+            --prompt="@ " \
+            --header="tab:multi-select  enter:confirm  esc:cancel" \
+            --pointer="▸" \
+            --layout=reverse \
+            --border=rounded \
+            --preview="head -40 $_KNUTE_WORKDIR/{}" \
+            --color="bg:#050506,fg:#8A8F98,hl:#5E6AD2,bg+:#111118,fg+:#EDEDEF,hl+:#6872D9,info:#5E6AD2,prompt:#5E6AD2,pointer:#5E6AD2,marker:#5E6AD2,spinner:#5E6AD2,header:#555566,border:#1a1a2e,gutter:#050506,preview-bg:#050506,preview-border:#1a1a2e,separator:#1a1a2e,query:#EDEDEF" \
+            </dev/tty 2>/dev/tty)
+
+        if [ -n "$selected" ]; then
+            local insert=""
+            while IFS= read -r f; do
+                insert+="@${f} "
+            done <<< "$selected"
+            READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}${insert}${READLINE_LINE:$READLINE_POINT}"
+            READLINE_POINT=$((READLINE_POINT + ${#insert}))
+        else
+            READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}@${READLINE_LINE:$READLINE_POINT}"
+            READLINE_POINT=$((READLINE_POINT + 1))
+        fi
+    }
+
+    bind -x '"@": _knute_file_pick'
+}
+
+teardown_file_completion() {
+    bind -r '@' 2>/dev/null
+    unset _KNUTE_WORKDIR
+    unset -f _knute_file_pick 2>/dev/null
+}
+
 # Detect the main branch for a repo root
 detect_main_branch() {
     local root="$1"

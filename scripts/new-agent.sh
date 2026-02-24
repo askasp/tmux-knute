@@ -14,7 +14,10 @@ echo "New agent [$SESSION]"
 echo ""
 read -r -p "Window name: " NAME
 [ -z "$NAME" ] && exit 0
-read -r -p "Task: " TASK
+
+setup_file_completion "$WORK_DIR"
+read -e -p "Task (@=files): " TASK
+teardown_file_completion
 [ -z "$TASK" ] && exit 0
 
 ESCAPED=$(printf '%s' "$TASK" | sed "s/'/'\\\\''/g")
