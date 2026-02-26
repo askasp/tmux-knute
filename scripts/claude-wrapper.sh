@@ -12,8 +12,15 @@ tmux set-option -w @knute-agent running 2>/dev/null
 # Enable monitor-bell on this window so the status bar shows activity
 tmux set-option -w monitor-bell on 2>/dev/null
 
+# If running in a worktree, restrict Claude to this directory
+CLAUDE_EXTRA_ARGS=()
+if [ -f .git ]; then
+    WT_PATH=$(pwd)
+    CLAUDE_EXTRA_ARGS+=(--append-system-prompt "IMPORTANT: You are working in a git worktree at $WT_PATH. You MUST only create and edit files within this directory. NEVER modify files in the main repository root or other worktrees. All file paths must be under $WT_PATH.")
+fi
+
 # Run claude with all passed arguments
-claude "$@"
+claude "${CLAUDE_EXTRA_ARGS[@]}" "$@"
 
 # Mark agent as done
 tmux set-option -w @knute-agent done 2>/dev/null

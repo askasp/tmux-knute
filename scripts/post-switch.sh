@@ -8,3 +8,5 @@ if [ -n "$target" ] && tmux has-session -t "=$target" 2>/dev/null; then
     tmux switch-client -t "=$target"
     [ -n "$window" ] && tmux select-window -t "=$target:$window"
 fi
+
+exit 0

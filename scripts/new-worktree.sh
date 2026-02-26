@@ -3,13 +3,33 @@
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/helpers.sh"
 
-# Resolve to the main worktree root, not a child worktree
-DEFAULT_ROOT=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
-if [ -z "$DEFAULT_ROOT" ]; then
-    DEFAULT_ROOT="$HOME"
-fi
+# Parse --session from dashboard (the hovered session)
+HOVER_SESSION=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --session) HOVER_SESSION="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
 
-read -e -p "Repo [$DEFAULT_ROOT]: " CUSTOM_ROOT
+# Resolve repo root from hovered session, fall back to caller session
+SOURCE_DIR=""
+if [ -n "$HOVER_SESSION" ] && [ "$HOVER_SESSION" != "---" ]; then
+    SOURCE_DIR=$(tmux list-panes -t "=$HOVER_SESSION" -F '#{pane_current_path}' 2>/dev/null | head -1)
+fi
+if [ -z "$SOURCE_DIR" ]; then
+    CALLER_SESSION=$(cat /tmp/knute-session 2>/dev/null)
+    [ -n "$CALLER_SESSION" ] && SOURCE_DIR=$(tmux list-panes -t "=$CALLER_SESSION" -F '#{pane_current_path}' 2>/dev/null | head -1)
+fi
+[ -z "$SOURCE_DIR" ] && SOURCE_DIR=$(pwd)
+
+# Get the main worktree root (not a child worktree)
+DEFAULT_ROOT=$(git -C "$SOURCE_DIR" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
+[ -z "$DEFAULT_ROOT" ] && DEFAULT_ROOT="$SOURCE_DIR"
+
+echo "Repo: $DEFAULT_ROOT"
+echo "(enter to confirm, or type a different path)"
+read -e -p "> " CUSTOM_ROOT
 ROOT="${CUSTOM_ROOT:-$DEFAULT_ROOT}"
 ROOT="${ROOT/#\~/$HOME}"
 
@@ -38,16 +58,16 @@ setup_file_completion "$ROOT"
 read -e -p "Task for claude (@=files, empty=shell only): " TASK
 teardown_file_completion
 
-ensure_gitignore
+ensure_gitignore "$ROOT"
 
-# Create worktree
+# Create worktree (all git commands target $ROOT explicitly)
 if [ ! -d "$WT" ]; then
-    if git show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
-        git worktree add "$WT" "$BRANCH"
-    elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH" 2>/dev/null; then
-        git worktree add "$WT" "$BRANCH"
+    if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
+        git -C "$ROOT" worktree add "$WT" "$BRANCH"
+    elif git -C "$ROOT" show-ref --verify --quiet "refs/remotes/origin/$BRANCH" 2>/dev/null; then
+        git -C "$ROOT" worktree add "$WT" "$BRANCH"
     else
-        git worktree add -b "$BRANCH" "$WT"
+        git -C "$ROOT" worktree add -b "$BRANCH" "$WT"
     fi
     [ $? -ne 0 ] && { echo "Failed"; read -n1 -r -p ""; exit 1; }
 fi

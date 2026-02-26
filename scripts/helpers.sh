@@ -32,9 +32,9 @@ current_session() {
 }
 
 ensure_gitignore() {
-    local root gitignore
-    root=$(repo_root) || return 1
-    gitignore="$root/.gitignore"
+    local root="${1:-$(repo_root)}"
+    [ -z "$root" ] && return 1
+    local gitignore="$root/.gitignore"
     if [ ! -f "$gitignore" ] || ! grep -qxF "$WORKTREE_DIR" "$gitignore" 2>/dev/null; then
         echo "$WORKTREE_DIR" >> "$gitignore"
     fi
@@ -92,6 +92,9 @@ session_worktree_path() {
 #        teardown_file_completion                 (after read -e)
 setup_file_completion() {
     export _KNUTE_WORKDIR="$1"
+
+    # Enable readline editing mode (required for bind -x)
+    set -o emacs 2>/dev/null
 
     _knute_file_pick() {
         local selected

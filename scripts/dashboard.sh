@@ -182,6 +182,10 @@ if [ "$1" = "--lazygit" ]; then
         echo "lazygit is not installed"; read -n1 -r -p ""; exit 1
     fi
     wd=$(tmux list-panes -t "=$session" -F '#{pane_current_path}' 2>/dev/null | head -1)
+    # Resolve to git repo root (pane may have cd'd elsewhere)
+    if [ -n "$wd" ]; then
+        wd=$(git -C "$wd" rev-parse --show-toplevel 2>/dev/null || echo "$wd")
+    fi
     if [ -z "$wd" ]; then
         echo "Could not resolve path for $session"; read -n1 -r -p ""; exit 1
     fi
@@ -272,7 +276,7 @@ SELECTED=$(echo "$SESSIONS" | fzf \
     --preview-window=right:40%:border-left \
     --bind "ctrl-r:reload($RELOAD)" \
     --bind "ctrl-e:execute-silent($CURRENT_DIR/dashboard.sh --toggle)+reload($RELOAD)" \
-    --bind "ctrl-w:execute($CURRENT_DIR/new-worktree.sh)+reload($RELOAD)" \
+    --bind "ctrl-w:execute($CURRENT_DIR/new-worktree.sh --session '{1}')+reload($RELOAD)" \
     --bind "ctrl-a:execute([ '{1}' != '---' ] && $CURRENT_DIR/new-agent.sh --session '{1}')+reload($RELOAD)" \
     --bind "ctrl-t:execute-silent([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --terminal '{1}')+reload($RELOAD)" \
     --bind "ctrl-x:execute([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --kill '{1}' '{2}')+reload($RELOAD)" \
