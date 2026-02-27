@@ -4,13 +4,17 @@
 # Modes:
 #   (default)                  — run the fzf dashboard
 #   --list [--collapsed] REPO  — print session list (for fzf reload)
+#   --smart-list REPO          — delegates to --list or issues --list based on mode
 #   --preview SESSION WINDEX   — print preview pane content
+#   --smart-preview F1 F2      — delegates to --preview or issues --preview based on mode
 #   --lazygit SESSION          — open lazygit in session's workdir
 #   --terminal SESSION         — open new shell window in session
 #   --kill SESSION WINDEX      — kill a window or session/worktree
+#   --toggle-mode              — flip between sessions/issues mode
+#   --toggle-watcher REPO      — start/stop the background issue watcher
 #
 # Keys inside fzf:
-#   enter   → switch to session/window
+#   enter   → switch to session/window (sessions mode) or start issue (issues mode)
 #   ctrl-w  → new worktree + agent
 #   ctrl-a  → new agent in selected session
 #   ctrl-t  → new terminal in selected session
@@ -18,6 +22,9 @@
 #   ctrl-g  → merge selected worktree
 #   ctrl-l  → lazygit on selected session
 #   ctrl-e  → toggle expanded/collapsed view
+#   ctrl-i  → toggle issues/sessions mode
+#   ctrl-p  → create PR for selected session
+#   ctrl-s  → toggle background watcher
 #   ctrl-r  → refresh list
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -249,30 +256,116 @@ if [ "$1" = "--toggle" ]; then
     exit 0
 fi
 
+# --- Mode: --toggle-mode ---
+# Flips between sessions and issues mode
+if [ "$1" = "--toggle-mode" ]; then
+    if [ "$(cat /tmp/knute-mode 2>/dev/null)" = "issues" ]; then
+        echo "sessions" > /tmp/knute-mode
+    else
+        echo "issues" > /tmp/knute-mode
+    fi
+    exit 0
+fi
+
+# --- Mode: --smart-list REPO ---
+# Delegates to session list or issue list based on current mode
+if [ "$1" = "--smart-list" ]; then
+    repo="$2"
+    repo_root="$3"
+    if [ "$(cat /tmp/knute-mode 2>/dev/null)" = "issues" ] && [ -n "$repo_root" ]; then
+        exec "$CURRENT_DIR/issues.sh" --list "$repo_root"
+    else
+        exec "$CURRENT_DIR/dashboard.sh" --list "$repo"
+    fi
+fi
+
+# --- Mode: --smart-preview FIELD1 FIELD2 ---
+# Delegates to session preview or issue preview based on current mode
+if [ "$1" = "--smart-preview" ]; then
+    f1="$2" f2="$3"
+    if [ "$(cat /tmp/knute-mode 2>/dev/null)" = "issues" ]; then
+        # In issues mode, field1=issue_number, field2=repo_root
+        exec "$CURRENT_DIR/issues.sh" --preview "$f1" "$f2"
+    else
+        # In sessions mode, field1=session, field2=windex
+        exec "$CURRENT_DIR/dashboard.sh" --preview "$f1" "$f2"
+    fi
+fi
+
+# --- Mode: --toggle-watcher REPO_ROOT ---
+if [ "$1" = "--toggle-watcher" ]; then
+    repo_root="$2"
+    repo_name=$(basename "$repo_root" 2>/dev/null)
+    pid_file="/tmp/knute-watcher-${repo_name}.pid"
+
+    if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        # Stop watcher
+        kill "$(cat "$pid_file")" 2>/dev/null
+        rm -f "$pid_file"
+        echo "Watcher stopped."
+        sleep 1
+    else
+        # Start watcher — ask for max parallel
+        if [ -n "$repo_root" ]; then
+            read -r -p "Max parallel agents [3]: " max_p
+            max_p="${max_p:-3}"
+            nohup "$CURRENT_DIR/watcher.sh" "$repo_root" "$max_p" &>/dev/null &
+            echo "Watcher started (max $max_p parallel agents)."
+            sleep 1
+        fi
+    fi
+    exit 0
+fi
+
 # --- Default: run fzf dashboard ---
 CURRENT=$(current_session)
 REPO=$(repo_name 2>/dev/null)
+REPO_ROOT=$(repo_root 2>/dev/null)
 
-# Default to collapsed
+# Default to collapsed and sessions mode
 [ ! -f /tmp/knute-view ] && echo "collapsed" > /tmp/knute-view
+[ ! -f /tmp/knute-mode ] && echo "sessions" > /tmp/knute-mode
 
-RELOAD="$CURRENT_DIR/dashboard.sh --list $REPO"
+# Smart reload/preview delegates based on mode at runtime
+RELOAD="$CURRENT_DIR/dashboard.sh --smart-list '$REPO' '$REPO_ROOT'"
+PREVIEW="$CURRENT_DIR/dashboard.sh --smart-preview '{1}' '{2}'"
 
-SESSIONS=$("$CURRENT_DIR/dashboard.sh" --list "$REPO")
-[ -z "$SESSIONS" ] && { echo "No sessions."; read -n1 -r -p ""; exit 0; }
+# Watcher status for header
+WATCHER_STATUS=""
+if [ -n "$REPO_ROOT" ]; then
+    pid_file="/tmp/knute-watcher-$(basename "$REPO_ROOT").pid"
+    if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        WATCHER_STATUS="  watcher:on"
+    fi
+fi
 
-SELECTED=$(echo "$SESSIONS" | fzf \
+# Build mode-aware header
+SESSIONS_HEADER="enter:switch  ^w:worktree  ^a:agent  ^t:term  ^n:new  ^x:kill  ^g:merge  ^l:lazygit  ^e:view  ^i:issues${WATCHER_STATUS}"
+ISSUES_HEADER="enter:start  ^p:PR  ^i:sessions  ^s:watcher  ^r:refresh${WATCHER_STATUS}"
+
+MODE=$(cat /tmp/knute-mode 2>/dev/null)
+if [ "$MODE" = "issues" ]; then
+    HEADER="$ISSUES_HEADER"
+    INITIAL=$("$CURRENT_DIR/issues.sh" --list "$REPO_ROOT" 2>/dev/null)
+    [ -z "$INITIAL" ] && INITIAL=$(printf '%s\t%s\t%s' "---" "$REPO_ROOT" "No open issues")
+else
+    HEADER="$SESSIONS_HEADER"
+    INITIAL=$("$CURRENT_DIR/dashboard.sh" --list "$REPO")
+    [ -z "$INITIAL" ] && { echo "No sessions."; read -n1 -r -p ""; exit 0; }
+fi
+
+SELECTED=$(echo "$INITIAL" | fzf \
     --ansi \
     --delimiter=$'\t' \
     --with-nth=3.. \
-    --header="enter:switch  ^w:worktree  ^a:agent  ^t:term  ^n:new  ^x:kill  ^g:merge  ^l:lazygit  ^e:view" \
+    --header="$HEADER" \
     --prompt="  $CURRENT ❯ " \
     --pointer="▸" \
     --height=100% \
     --layout=reverse \
     --border=rounded \
     --color="bg:#050506,fg:#8A8F98,hl:#5E6AD2,bg+:#111118,fg+:#EDEDEF,hl+:#6872D9,info:#5E6AD2,prompt:#5E6AD2,pointer:#5E6AD2,marker:#5E6AD2,spinner:#5E6AD2,header:#555566,border:#1a1a2e,gutter:#050506,preview-bg:#050506,preview-border:#1a1a2e,separator:#1a1a2e,query:#EDEDEF" \
-    --preview "$CURRENT_DIR/dashboard.sh --preview '{1}' '{2}'" \
+    --preview "$PREVIEW" \
     --preview-window=right:40%:border-left \
     --bind "ctrl-r:reload($RELOAD)" \
     --bind "ctrl-e:execute-silent($CURRENT_DIR/dashboard.sh --toggle)+reload($RELOAD)" \
@@ -283,15 +376,28 @@ SELECTED=$(echo "$SESSIONS" | fzf \
     --bind "ctrl-g:execute([ '{1}' != '---' ] && $CURRENT_DIR/merge-worktree.sh --session '{1}')+reload($RELOAD)" \
     --bind "ctrl-n:execute($CURRENT_DIR/dashboard.sh --new-session)+reload($RELOAD)" \
     --bind "ctrl-l:execute([ '{1}' != '---' ] && $CURRENT_DIR/dashboard.sh --lazygit '{1}')+reload($RELOAD)" \
+    --bind "ctrl-i:execute-silent($CURRENT_DIR/dashboard.sh --toggle-mode)+reload($RELOAD)" \
+    --bind "ctrl-p:execute([ '{1}' != '---' ] && $CURRENT_DIR/issues.sh --create-pr '{1}')+reload($RELOAD)" \
+    --bind "ctrl-s:execute($CURRENT_DIR/dashboard.sh --toggle-watcher $REPO_ROOT)+reload($RELOAD)" \
 )
 
-# Handle enter: switch to selected session (and optionally window)
+# Handle enter: behavior depends on mode
 if [ -n "$SELECTED" ]; then
-    session=$(printf '%s' "$SELECTED" | cut -d$'\t' -f1)
-    windex=$(printf '%s' "$SELECTED" | cut -d$'\t' -f2 | tr -d ' ')
+    f1=$(printf '%s' "$SELECTED" | cut -d$'\t' -f1)
+    f2=$(printf '%s' "$SELECTED" | cut -d$'\t' -f2 | tr -d ' ')
+    mode=$(cat /tmp/knute-mode 2>/dev/null)
 
-    if [ -n "$session" ] && [ "$session" != "---" ]; then
-        echo "$session" > /tmp/knute-switch
-        [ "$windex" != "-1" ] && echo "$windex" > /tmp/knute-window
+    if [ "$f1" = "---" ]; then
+        : # separator, do nothing
+    elif [ "$mode" = "issues" ]; then
+        # In issues mode: f1=issue_number, f2=repo_root
+        # --start creates worktree+session and writes /tmp/knute-switch
+        "$CURRENT_DIR/issues.sh" --start "$f1" "$f2"
+    else
+        # In sessions mode, f1=session, f2=windex
+        if [ -n "$f1" ]; then
+            echo "$f1" > /tmp/knute-switch
+            [ "$f2" != "-1" ] && echo "$f2" > /tmp/knute-window
+        fi
     fi
 fi

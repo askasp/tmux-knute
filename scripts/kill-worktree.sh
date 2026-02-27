@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 # kill-worktree.sh — kill worktree session and remove worktree
-# Usage: kill-worktree.sh [--session NAME]
+# Usage: kill-worktree.sh [--session NAME] [--force]
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$CURRENT_DIR/helpers.sh"
 
-parse_session_arg "$@"
+FORCE=false
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--force" ]; then
+        FORCE=true
+    else
+        ARGS+=("$arg")
+    fi
+done
+parse_session_arg "${ARGS[@]}"
 
 if [[ "$SESSION" != */* ]]; then
-    echo "Not a worktree session ($SESSION)"
-    read -n1 -r -p ""; exit 1
+    $FORCE || echo "Not a worktree session ($SESSION)"
+    $FORCE || read -n1 -r -p ""
+    exit 1
 fi
 
 REPO="${SESSION%%/*}"
@@ -16,11 +26,13 @@ BRANCH="${SESSION#*/}"
 WT=$(session_worktree_path "$SESSION")
 MAIN_ROOT="${WT%/$WORKTREE_DIR/$BRANCH}"
 
-echo "Kill: $SESSION"
-[ -d "$WT" ] && echo "Path: $WT"
-echo ""
-read -r -p "Kill session and remove worktree? [y/N] " CONFIRM
-[[ ! "$CONFIRM" =~ ^[yY]$ ]] && exit 0
+if ! $FORCE; then
+    echo "Kill: $SESSION"
+    [ -d "$WT" ] && echo "Path: $WT"
+    echo ""
+    read -r -p "Kill session and remove worktree? [y/N] " CONFIRM
+    [[ ! "$CONFIRM" =~ ^[yY]$ ]] && exit 0
+fi
 
 # If killing the session we're in, switch client to another session first
 # so the dashboard popup doesn't die with it

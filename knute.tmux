@@ -20,7 +20,5 @@ tmux unbind-key -T prefix W 2>/dev/null
 tmux unbind-key -T prefix X 2>/dev/null
 tmux unbind-key -T prefix Z 2>/dev/null
 
-tmux bind-key K \
-    run-shell 'echo "#{session_name}" > /tmp/knute-session' '\;' \
-    display-popup -E -w 100% -h 100% -d '#{pane_current_path}' "$SCRIPTS/dashboard.sh" '\;' \
-    run-shell "$SCRIPTS/post-switch.sh"
+tmux bind-key K display-popup -E -w 100% -h 100% -d '#{pane_current_path}' \
+    "echo '#{session_name}' > /tmp/knute-session; '$SCRIPTS/dashboard.sh'; '$SCRIPTS/post-switch.sh'"
